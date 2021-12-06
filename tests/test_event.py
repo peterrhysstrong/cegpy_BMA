@@ -5,7 +5,7 @@ import pytest
 from collections import defaultdict
 from pathlib import Path
 from pytest_mock import MockerFixture
-from src.cegpy import EventTree
+from src.cegpy import EventTree, check_holding_time_mapping
 
 
 class TestEventTreeAPI():
@@ -31,6 +31,36 @@ class TestEventTreeAPI():
             sampling_zero_paths=szp)
 
 
+class TestEventTreeHoldingTimes():
+    def setup(self):
+        df_path = Path(__file__).resolve(
+            ).parent.parent.joinpath(
+            'data/ctdceg_data1.xlsx')
+        self.df = pd.read_excel(df_path)
+        self.ht_mapping = {
+            "Fall": "Fall time",
+            "Outcome": "Outcome time",
+        }
+
+    def test_holding_time_columns_setting(self) -> None:
+        """verifies the holding_time_columns mapping dictionary is set"""
+
+        et = EventTree(
+            dataframe=self.df,
+            holding_time_columns=self.ht_mapping
+        )
+
+    def test_missing_holding_time_vals(self) -> None:
+        """Check fails if one is missing but the other is there"""
+        self.df.at[8, "Fall time"] = 0
+        pytest.raises(
+            ValueError,
+            check_holding_time_mapping,
+            dataframe=self.df,
+            mapping_dict=self.ht_mapping
+        )
+
+
 class TestEventTree():
     def setup(self):
         df_path = Path(__file__).resolve(
@@ -40,7 +70,7 @@ class TestEventTree():
         self.df = pd.read_excel(df_path)
         self.et = EventTree(dataframe=self.df)
         self.reordered_et = EventTree(
-            dataframe=self.df, 
+            dataframe=self.df,
             var_order=self.df.columns[::-1]
         )
         self.node_format = re.compile('^s\\d\\d*$')
@@ -62,7 +92,7 @@ class TestEventTree():
         szp = [('Medium',), ('Medium', 'High')]
         self.et.sampling_zeros = szp
         assert self.et.sampling_zeros == szp
-    
+
     def test_order_of_columns(self) -> None:
         assert self.reordered_et.variables == list(self.df.columns[::-1])
 
@@ -117,6 +147,7 @@ class TestEventTree():
             for node in edge:
                 assert isinstance(node, str)
             assert isinstance(count, int)
+
 
 
 class TestIntegration():

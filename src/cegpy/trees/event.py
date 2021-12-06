@@ -1,5 +1,7 @@
 from collections import defaultdict
+from typing import Dict
 import numpy as np
+from pandas.core.frame import DataFrame
 import pydotplus as pdp
 import logging
 from ..utilities.util import Util
@@ -85,7 +87,6 @@ class EventTree(nx.MultiDiGraph):
         super().__init__(incoming_graph_data, **attr)
         self._sampling_zero_paths = None
         self.sampling_zeros = sampling_zero_paths
-
         # Paths sorted alphabetically in order of length
         self._sorted_paths = defaultdict(int)
 
@@ -94,6 +95,9 @@ class EventTree(nx.MultiDiGraph):
             self.dataframe = dataframe[var_order]
         else:
             self.dataframe = dataframe
+
+        self.holding_time_columns = holding_time_columns
+
         self.__construct_event_tree()
         logger.info('Initialisation complete!')
 
@@ -148,6 +152,23 @@ class EventTree(nx.MultiDiGraph):
                              Should be a list of tuples like so:\n \
                              [('edge_1',), ('edge_1', 'edge_2'), ...]"
                 raise ValueError(error_str)
+
+    @property
+    def holding_time_columns(self) -> Dict:
+        if self._holding_time_columns is None:
+            logger.info("No holding time information given.")
+        return self._holding_time_columns
+
+    @holding_time_columns.setter
+    def holding_time_columns(self, mapping_dict: Dict):
+        """Use this function to store the holding time mapping."""
+        if mapping_dict is None:
+            self._holding_time_columns = None
+        else:
+            check_holding_time_mapping(
+                dataframe=self.dataframe,
+                mapping_dict=mapping_dict
+            )
 
     @property
     def situations(self) -> list:
@@ -367,3 +388,29 @@ class EventTree(nx.MultiDiGraph):
                     key=path[-1],
                     count=count
                 )
+
+
+def check_holding_time_mapping(
+    dataframe: DataFrame,
+    mapping_dict: Dict
+) -> None:
+    # Checking dataframe that all variables mapped to holding time,
+    # have values for the variable and corresponding holding time
+    # OR both are missing.
+    for variable, holding_time in mapping_dict.items():
+        variable_col: DataFrame = dataframe[variable]
+        variable_null_indexes = variable_col[
+            variable_col.isnull()
+        ].index.tolist()
+
+        holding_time_col: DataFrame = dataframe[holding_time]
+        holding_time_indexes = holding_time_col[
+            holding_time_col.isnull()
+        ].index.tolist()
+
+        if variable_null_indexes != holding_time_indexes:
+            raise ValueError(
+                f"Inconsitencies found: values for {variable} and "
+                f"{holding_time} are not perfectly mapped.")
+
+
