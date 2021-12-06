@@ -111,6 +111,9 @@ class EventTree(nx.MultiDiGraph):
     def variables(self) -> list:
         """The column headers of the dataset"""
         vars = list(self._dataframe.columns)
+        if self.holding_time_columns is not None:
+            ht_columns_to_exclude = list(self.holding_time_columns.values())
+            vars = [var for var in vars if var not in ht_columns_to_exclude]
         logger.info('Variables extracted from dataframe were:')
         logger.info(vars)
         return vars
@@ -169,6 +172,7 @@ class EventTree(nx.MultiDiGraph):
                 dataframe=self.dataframe,
                 mapping_dict=mapping_dict
             )
+            self._holding_time_columns = mapping_dict
 
     @property
     def situations(self) -> list:
@@ -418,5 +422,3 @@ def check_holding_time_mapping(
             raise ValueError(
                 f"Inconsitencies found: values for {variable} and "
                 f"{holding_time} are not perfectly mapped.")
-
-

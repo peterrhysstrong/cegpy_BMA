@@ -45,7 +45,6 @@ class TestEventTreeHoldingTimes():
 
     def test_holding_time_columns_setting(self) -> None:
         """verifies the holding_time_columns mapping dictionary is set"""
-
         et = EventTree(
             dataframe=self.df,
             holding_time_columns=self.ht_mapping
@@ -71,6 +70,21 @@ class TestEventTreeHoldingTimes():
             dataframe=self.df,
             mapping_dict=self.ht_mapping
         )
+
+    def test_variables_property(self) -> None:
+        """variables doesn't include holding_time_columns"""
+        et = EventTree(
+            dataframe=self.df,
+            holding_time_columns=self.ht_mapping
+        )
+        vars = et.variables
+        assert vars == [
+            "Residence",
+            "Risk",
+            "Treatment",
+            "Fall",
+            "Outcome",
+        ]
 
 
 class TestEventTree():
