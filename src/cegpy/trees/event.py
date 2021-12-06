@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Dict
+from typing import Dict, List
 import numpy as np
 from pandas.core.frame import DataFrame
 import pydotplus as pdp
@@ -287,15 +287,38 @@ class EventTree(nx.MultiDiGraph):
             return Image(graph.create_png())
 
     def __create_unsorted_paths_dict(self) -> defaultdict:
+
         """Creates and populates a dictionary of all paths provided in the dataframe,
         in the order in which they are given."""
-        unsorted_paths = defaultdict(int)
+        def add_val_to_path_dict():
+            try:
+                unsorted_paths[new_row]
+            except KeyError:
+                unsorted_paths[new_row] = {
+                    "count": 0,
+                    "holding_times": [],
+                }
+            finally:
+                unsorted_paths[new_row]["count"] += 1
+                try:
+                    corr_holding_time = self.holding_time_columns[var]
+                    holding_times: List = (
+                        unsorted_paths[new_row]["holding_times"]
+                    )
+                    holding_times.append(
+                        self.dataframe[corr_holding_time][row_index]
+                    )
+                    unsorted_paths[new_row]["holding_times"] = holding_times
+                except KeyError:
+                    pass
 
-        for variable_number in range(0, len(self.variables)):
+        unsorted_paths = dict()
+
+        for var_index, var in enumerate(self.variables):
             dataframe_upto_variable = self.dataframe.loc[
-                :, self.variables[0:variable_number+1]]
+                :, self.variables[0:var_index+1]]
 
-            for row in dataframe_upto_variable.itertuples():
+            for row_index, row in enumerate(dataframe_upto_variable.itertuples()):
                 row = row[1:]
                 new_row = [edge_label for edge_label in row if
                            edge_label != np.nan and
@@ -308,7 +331,7 @@ class EventTree(nx.MultiDiGraph):
                 # result in double counting nan must be identified as string
                 if (row[-1] != np.nan and str(row[-1]) != 'NaN' and
                    str(row[-1]) != 'nan' and row[-1] != ''):
-                    unsorted_paths[new_row] += 1
+                    add_val_to_path_dict()
 
         return unsorted_paths
 
