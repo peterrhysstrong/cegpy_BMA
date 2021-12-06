@@ -408,6 +408,12 @@ def check_holding_time_mapping(
             holding_time_col.isnull()
         ].index.tolist()
 
+        if holding_time_col.dtypes != np.float64:
+            raise TypeError(
+                f"Holding times should all be floats."
+                f"Column: {holding_time} contains values that are not floats."
+            )
+
         if variable_null_indexes != holding_time_indexes:
             raise ValueError(
                 f"Inconsitencies found: values for {variable} and "
