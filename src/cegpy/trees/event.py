@@ -14,8 +14,15 @@ logger = logging.getLogger('cegpy.event_tree')
 
 class EventTree(nx.MultiDiGraph):
 
-    def __init__(self, dataframe, sampling_zero_paths=None,
-                 incoming_graph_data=None, var_order=None, **attr) -> None:
+    def __init__(
+        self,
+        dataframe,
+        sampling_zero_paths=None,
+        incoming_graph_data=None,
+        var_order=None,
+        holding_time_columns=None,
+        **attr
+    ) -> None:
         """Initialize an event tree graph with edges, name, or graph attributes.
         This class extends the networkx DiGraph class to allow the creation
         of event trees from data provided in a pandas dataframe.
@@ -43,6 +50,14 @@ class EventTree(nx.MultiDiGraph):
         var_order : ordered list of variable names. (optional, default order
             of variables in the event tree adopted from the order of columns in
             the dataframe).
+
+        holding_time_columns: A mapping of variables to column names of their
+            corresponding holding times, to be passed as a dict:
+                holding_time_columns={
+                    "first symptom": "time to first symptom",
+                    "second symptom": "time to second symptom",
+                    ...
+                }
 
         attr : keyword arguments, optional (default= no attributes)
             Attributes to add to graph as key=value pairs.
