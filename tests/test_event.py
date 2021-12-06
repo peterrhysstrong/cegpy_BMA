@@ -1,3 +1,4 @@
+from typing import Type
 import pandas as pd
 import re
 import numpy as np
@@ -55,6 +56,17 @@ class TestEventTreeHoldingTimes():
         self.df.at[8, "Fall time"] = 0
         pytest.raises(
             ValueError,
+            check_holding_time_mapping,
+            dataframe=self.df,
+            mapping_dict=self.ht_mapping
+        )
+
+    def test_non_float_holding_time_raises_TypeError(self) -> None:
+        """Check fails if a non float value in the column raises error"""
+        self.df["Fall time"] = self.df["Fall time"].astype(str)
+        self.df.at[1, "Fall time"] = "Test string value"
+        pytest.raises(
+            TypeError,
             check_holding_time_mapping,
             dataframe=self.df,
             mapping_dict=self.ht_mapping
