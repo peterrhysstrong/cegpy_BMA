@@ -13,65 +13,7 @@ logger = logging.getLogger('cegpy.event_tree')
 
 
 class EventTree(nx.MultiDiGraph):
-    """
-    Class for event trees.
 
-    This class extends the networkx DiGraph class to allow the creation
-    of event trees from data provided in a pandas dataframe.
-
-    A DiGraph stores nodes and edges with optional data, or attributes.
-
-    DiGraphs hold directed edges.  Self loops are allowed but multiple
-    (parallel) edges are not.
-
-    Nodes can be arbitrary (hashable) Python objects with optional
-    key/value attributes. By convention `None` is not used as a node.
-
-    Edges are represented as links between nodes with optional
-    key/value attributes.
-
-    Parameters
-    ----------
-    dataframe : Pandas dataframe (required)
-        Dataframe containing variables as column headers, with event
-        name strings in each cell. These event names will be used to
-        create the edges of the event tree. Counts of each event will
-        be extracted and attached to each edge.
-
-    sampling_zero_paths: list of tuples containing paths to sampling
-        zeros.
-        Format is as follows: \
-            [('edge_1',), ('edge_1', 'edge_2'), ...]
-
-    incoming_graph_data : input graph (optional, default: None)
-        Data to initialize graph.  If None (default) an empty
-        graph is created.  The data can be an edge list, or any
-        NetworkX graph object.  If the corresponding optional Python
-        packages are installed the data can also be a NumPy matrix
-        or 2d ndarray, a SciPy sparse matrix, or a PyGraphviz graph.
-
-    attr : keyword arguments, optional (default= no attributes)
-        Attributes to add to graph as key=value pairs.
-
-    See Also
-    --------
-    StagedTrees \n
-    ChainEventGraph
-
-    Examples
-    --------
-    >>> G = nx.Graph()  # or DiGraph, MultiGraph, MultiDiGraph, etc
-    >>> G = nx.Graph(name="my graph")
-    >>> e = [(1, 2), (2, 3), (3, 4)]  # list of edges
-    >>> G = nx.Graph(e)
-
-    Arbitrary graph attribute pairs (key=value) may be assigned
-
-    >>> G = nx.Graph(e, day="Friday")
-    >>> G.graph
-    {'day': 'Friday'}
-
-    """
     def __init__(self, dataframe, sampling_zero_paths=None,
                  incoming_graph_data=None, var_order=None, **attr) -> None:
         """Initialize an event tree graph with edges, name, or graph attributes.
@@ -97,10 +39,10 @@ class EventTree(nx.MultiDiGraph):
             NetworkX graph object.  If the corresponding optional Python
             packages are installed the data can also be a NumPy matrix
             or 2d ndarray, a SciPy sparse matrix, or a PyGraphviz graph.
-        
-        var_order : ordered list of variable names. (optional, default order 
-            of variables in the event tree adopted from the order of columns in 
-            the dataframe). 
+
+        var_order : ordered list of variable names. (optional, default order
+            of variables in the event tree adopted from the order of columns in
+            the dataframe).
 
         attr : keyword arguments, optional (default= no attributes)
             Attributes to add to graph as key=value pairs.
