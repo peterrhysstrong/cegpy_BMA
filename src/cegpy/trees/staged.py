@@ -453,7 +453,7 @@ class StagedTree(EventTree):
         number_of_stages = len(merged_situations)
         if colour_list is None:
             stage_colours = Util.generate_colours(number_of_stages)
-        else: 
+        else:
             stage_colours = colour_list
             if len(colour_list) < number_of_stages:
                 logger.warning(
@@ -464,20 +464,19 @@ class StagedTree(EventTree):
         iter_colour = cycle(stage_colours)
         for node in self.nodes:
             try:
-                stage = self.nodes[node]['stage']
                 self.nodes[node]['colour'] = next(iter_colour)
-            except KeyError:
+            except StopIteration:
                 self.nodes[node]['colour'] = 'lightgrey'
 
     def calculate_AHC_transitions(self, prior=None,
-                                  alpha=None, hyperstage=None, 
+                                  alpha=None, hyperstage=None,
                                   colour_list=None):
         '''Bayesian Agglommerative Hierarchical Clustering algorithm
         implementation. It returns a list of lists of the situations which
         have been merged together, the likelihood of the final model and
         the mean posterior conditional probabilities of the stages.
-        
-        User can specify a list of colours to be used for stages. Otherwise, 
+
+        User can specify a list of colours to be used for stages. Otherwise,
         colours evenly spaced around the colour spectrum are used.'''
         logger.info("\n\n --- Starting AHC Algorithm ---")
 
