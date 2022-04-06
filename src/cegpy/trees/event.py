@@ -23,6 +23,7 @@ class EventTree(nx.MultiDiGraph):
         incoming_graph_data=None,
         var_order=None,
         holding_time_columns=None,
+        complete_case=True,
         **attr
     ) -> None:
         """Initialize an event tree graph with edges, name, or graph attributes.
@@ -53,13 +54,15 @@ class EventTree(nx.MultiDiGraph):
             of variables in the event tree adopted from the order of columns in
             the dataframe).
 
-        holding_time_columns: A mapping of variables to column names of their
-            corresponding holding times, to be passed as a dict:
+        holding_time_columns: A mapping of variable column names to its corresponding
+                holding time column names, to be passed as a dict:
                 holding_time_columns={
-                    "first symptom": "time to first symptom",
-                    "second symptom": "time to second symptom",
+                    "first symptom column": "time to first symptom column",
+                    "second symptom column": "time to second symptom column",
                     ...
-                }
+                }.
+            All holding times must be integers or floats and must be in the
+            same unit of time (e.g. seconds, minutes, hours, days).
 
         attr : keyword arguments, optional (default= no attributes)
             Attributes to add to graph as key=value pairs.
@@ -76,15 +79,18 @@ class EventTree(nx.MultiDiGraph):
         >>> G = nx.Graph(e)
 
         Arbitrary graph attribute pairs (key=value) may be assigned
-
         >>> G = nx.Graph(e, day="Friday")
         >>> G.graph
         {'day': 'Friday'}
 
         """
+        # TODO: Add example for holding time columns below
         logger.info('Initialising')
         # Initialise Networkx DiGraph class
         super().__init__(incoming_graph_data, **attr)
+
+        self.holding_time_columns = holding_time_columns
+
         self._sampling_zero_paths = None
         self.sampling_zeros = sampling_zero_paths
         # Paths sorted alphabetically in order of length
@@ -95,8 +101,6 @@ class EventTree(nx.MultiDiGraph):
             self.dataframe = dataframe[var_order]
         else:
             self.dataframe = dataframe
-
-        self.holding_time_columns = holding_time_columns
 
         self.__construct_event_tree()
         logger.info('Initialisation complete!')
@@ -120,6 +124,7 @@ class EventTree(nx.MultiDiGraph):
 
     @property
     def dataframe(self):
+        """The dataset"""
         return self._dataframe
 
     @dataframe.setter
@@ -133,6 +138,8 @@ class EventTree(nx.MultiDiGraph):
 
     @property
     def sampling_zeros(self):
+        """Checking whether sampling zero paths have been assigned,
+            and if they have, running a function to process them."""
         if self._sampling_zero_paths is None:
             logger.info("EventTree.sampling_zero_paths \
                     has not been set.")
@@ -158,6 +165,8 @@ class EventTree(nx.MultiDiGraph):
 
     @property
     def holding_time_columns(self) -> Dict:
+        """Checking whether holding time columns have been assigned,
+            and if they have, running a function to process them."""
         if self._holding_time_columns is None:
             logger.info("No holding time information given.")
         return self._holding_time_columns
@@ -288,6 +297,7 @@ class EventTree(nx.MultiDiGraph):
             return None
         else:
             logger.info("--- Exporting graph to notebook ---")
+            # pylint: disable=no-member
             return Image(graph.create_png())
 
     def __create_unsorted_paths_dict(self) -> defaultdict:
@@ -425,9 +435,9 @@ def check_holding_time_mapping(
     dataframe: DataFrame,
     mapping_dict: Dict
 ) -> None:
-    # Checking dataframe that all variables mapped to holding time,
-    # have values for the variable and corresponding holding time
-    # OR both are missing.
+    """ Checking dataframe that all variables mapped to holding time,
+        have values for the variable and corresponding holding time
+        OR both are missing."""
     for variable, holding_time in mapping_dict.items():
         variable_col: DataFrame = dataframe[variable]
         variable_null_indexes = variable_col[
