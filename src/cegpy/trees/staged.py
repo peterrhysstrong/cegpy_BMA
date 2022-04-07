@@ -442,7 +442,6 @@ class StagedTree(EventTree):
                         posteriors[p_index] = [0]
 
                 hyperstage.remove(sub_hyper)
-                print("blash")
 
         hyperstage_combinations = [
             item for sub_hyper in hyperstage
