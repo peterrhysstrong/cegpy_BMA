@@ -93,9 +93,10 @@ class EventTree(nx.MultiDiGraph):
     {'day': 'Friday'}
 
     """
-    _stratified: Optional[bool]
+    _stratified: bool
     _sampling_zero_paths: Optional[List[Tuple]] = None
-    _sorted_paths: Mapping[Tuple[Str], int]
+    # Paths sorted alphabetically in order of length
+    _sorted_paths: Mapping[Tuple[Str], int] = defaultdict(int)
 
     def __init__(
         self,
@@ -135,18 +136,25 @@ class EventTree(nx.MultiDiGraph):
             raise ValueError(
                 "complete_case should be a boolean"
             )
+        self.complete_case = complete_case
+
+        self.sampling_zeros = sampling_zero_paths
 
         if not isinstance(stratified, bool):
             raise ValueError(
                 "stratified should be a boolean"
             )
+        self.stratified = stratified
 
         # Initialise Networkx DiGraph class
         super().__init__(incoming_graph_data, **attr)
 
-        self.sampling_zeros = sampling_zero_paths
-        self.complete_case = complete_case
-        self.stratified = stratified
+        # pandas dataframe passed via parameters
+        self.dataframe = (
+            dataframe[var_order].astype(str)
+            if var_order is not None
+            else dataframe.astype(str)
+        )
 
         # Dealing with structural and non-structural...
         # ... missing value labels
@@ -174,16 +182,6 @@ class EventTree(nx.MultiDiGraph):
                     "missing",
                     inplace=True,
                 )
-
-        # Paths sorted alphabetically in order of length
-        self._sorted_paths = defaultdict(int)
-
-        # pandas dataframe passed via parameters
-        self.dataframe = (
-            dataframe[var_order].astype(str)
-            if var_order is not None
-            else dataframe.astype(str)
-        )
 
         self.__construct_event_tree()
         logger.info('Initialisation complete!')
@@ -237,7 +235,9 @@ class EventTree(nx.MultiDiGraph):
     def stratified(self, stratified: bool):
         if stratified and not self.complete_case:
             raise ValueError(
-                "Under the current implementation, it is not possible to "
+                "If all through the provided dataset are complete, "
+                "set 'complete_case = True'. Otherwise, "
+                "under the current implementation, it is not possible to "
                 "automatically stratify the tree when non-structural "
                 "missing values are not removed (complete_case = False).\n"
                 "Please manually stratify the dataset by passing in the "
