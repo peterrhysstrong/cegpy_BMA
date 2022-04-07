@@ -1,5 +1,7 @@
+from ast import Str
 from collections import defaultdict
-from typing import Dict, List
+import itertools
+from typing import Dict, List, Mapping, Optional, Tuple
 import numpy as np
 from pandas.core.frame import DataFrame
 import pydotplus as pdp
@@ -15,92 +17,175 @@ logger = logging.getLogger('cegpy.event_tree')
 
 
 class EventTree(nx.MultiDiGraph):
+    """
+    Class for event trees.
+
+    This class extends the networkx DiGraph class to allow the creation
+    of event trees from data provided in a pandas dataframe.
+
+    A DiGraph stores nodes and edges with optional data, or attributes.
+
+    DiGraphs hold directed edges.  Self loops are allowed but multiple
+    (parallel) edges are not.
+
+    Nodes can be arbitrary (hashable) Python objects with optional
+    key/value attributes. By convention `None` is not used as a node.
+
+    Edges are represented as links between nodes with optional
+    key/value attributes.
+
+    Parameters
+    ----------
+    dataframe : Pandas dataframe (required)
+        Dataframe containing variables as column headers, with event
+        name strings in each cell. These event names will be used to
+        create the edges of the event tree. Counts of each event will
+        be extracted and attached to each edge.
+
+    sampling_zero_paths: list of tuples containing paths to sampling
+        zeros.
+        Format is as follows: \
+            [('edge_1',), ('edge_1', 'edge_2'), ...]
+
+    incoming_graph_data : input graph (optional, default: None)
+        Data to initialize graph.  If None (default) an empty
+        graph is created.  The data can be an edge list, or any
+        NetworkX graph object.  If the corresponding optional Python
+        packages are installed the data can also be a NumPy matrix
+        or 2d ndarray, a SciPy sparse matrix, or a PyGraphviz graph.
+
+    var_order : ordered list of variable names. (optional, default order
+        of variables in the event tree adopted from the order of columns in
+        the dataframe).
+
+    struct_missing_label : observations which are structurally missing, i.e.
+        where a non-missing value is illogical for a subset of the individuals
+        in our sample. 
+        E.g: Post operative health status is irrelevant for a dead patient.
+        Any NaN or empty cells will always be treated as structurally missing.
+
+    missing_label : all missing values that are not structurally missing.
+
+    complete_case : If True, all entries (rows) with non-structural missing
+        values are removed.
+
+    stratified : If True, the tree is assumed to be stratified, i.e. all
+        zero frequency paths are considered to be due to a sampling limitation.
+        This overwrites the sampling_zero_paths argument.
+
+    attr : keyword arguments, optional (default= no attributes)
+        Attributes to add to graph as key=value pairs.
+
+    See Also
+    --------
+    StagedTrees \n
+    ChainEventGraph
+
+    Examples
+    --------
+    >>> G = nx.Graph()  # or DiGraph, MultiGraph, MultiDiGraph, etc
+    >>> G = nx.Graph(name="my graph")
+    >>> e = [(1, 2), (2, 3), (3, 4)]  # list of edges
+    >>> G = nx.Graph(e)
+
+    Arbitrary graph attribute pairs (key=value) may be assigned
+
+    >>> G = nx.Graph(e, day="Friday")
+    >>> G.graph
+    {'day': 'Friday'}
+
+    """
+    _stratified: Optional[bool]
+    _sampling_zero_paths: Optional[List[Tuple]] = None
+    _sorted_paths: Mapping[Tuple[Str], int]
 
     def __init__(
         self,
-        dataframe,
+        dataframe: pd.DataFrame,
         sampling_zero_paths=None,
         incoming_graph_data=None,
         var_order=None,
-        holding_time_columns=None,
-        complete_case=True,
+        struct_missing_label=None,
+        missing_label=None,
+        complete_case=False,
+        stratified=False,
         **attr
     ) -> None:
-        """Initialize an event tree graph with edges, name, or graph attributes.
-        This class extends the networkx DiGraph class to allow the creation
-        of event trees from data provided in a pandas dataframe.
+        # Checking argument inputs are sensible
+        if not isinstance(dataframe, pd.DataFrame):
+            raise ValueError(
+                "The dataframe parameter must be a pandas.DataFrame"
+            )
 
-        Parameters
-        ----------
-        dataframe : Pandas dataframe (required)
-            Dataframe containing variables as column headers, with event
-            name strings in each cell. These event names will be used to
-            create the edges of the event tree. Counts of each event will
-            be extracted and attached to each edge.
+        if (
+            struct_missing_label is not None
+            and not isinstance(struct_missing_label, str)
+        ):
+            raise ValueError(
+                "struct_missing_label should be a string"
+            )
 
-        sampling_zero_paths: list of tuples containing paths to sampling
-            zeros.
-            Format is as follows: \
-                [('edge_1',), ('edge_1', 'edge_2'), ...]
+        if (
+            missing_label is not None
+            and not isinstance(missing_label, str)
+        ):
+            raise ValueError(
+                "missing_label should be a string"
+            )
 
-        incoming_graph_data : input graph (optional, default: None)
-            Data to initialize graph.  If None (default) an empty
-            graph is created.  The data can be an edge list, or any
-            NetworkX graph object.  If the corresponding optional Python
-            packages are installed the data can also be a NumPy matrix
-            or 2d ndarray, a SciPy sparse matrix, or a PyGraphviz graph.
+        if not isinstance(complete_case, bool):
+            raise ValueError(
+                "complete_case should be a boolean"
+            )
 
-        var_order : ordered list of variable names. (optional, default order
-            of variables in the event tree adopted from the order of columns in
-            the dataframe).
+        if not isinstance(stratified, bool):
+            raise ValueError(
+                "stratified should be a boolean"
+            )
 
-        holding_time_columns: A mapping of variable column names to its corresponding
-                holding time column names, to be passed as a dict:
-                holding_time_columns={
-                    "first symptom column": "time to first symptom column",
-                    "second symptom column": "time to second symptom column",
-                    ...
-                }.
-            All holding times must be integers or floats and must be in the
-            same unit of time (e.g. seconds, minutes, hours, days).
-
-        attr : keyword arguments, optional (default= no attributes)
-            Attributes to add to graph as key=value pairs.
-
-        See Also
-        --------
-        convert
-
-        Examples
-        --------
-        >>> G = nx.Graph()  # or DiGraph, MultiGraph, MultiDiGraph, etc
-        >>> G = nx.Graph(name="my graph")
-        >>> e = [(1, 2), (2, 3), (3, 4)]  # list of edges
-        >>> G = nx.Graph(e)
-
-        Arbitrary graph attribute pairs (key=value) may be assigned
-        >>> G = nx.Graph(e, day="Friday")
-        >>> G.graph
-        {'day': 'Friday'}
-
-        """
-        # TODO: Add example for holding time columns below
-        logger.info('Initialising')
         # Initialise Networkx DiGraph class
         super().__init__(incoming_graph_data, **attr)
 
-        self.holding_time_columns = holding_time_columns
-
-        self._sampling_zero_paths = None
         self.sampling_zeros = sampling_zero_paths
+        self.complete_case = complete_case
+        self.stratified = stratified
+
+        # Dealing with structural and non-structural...
+        # ... missing value labels
+        if struct_missing_label is not None:
+            dataframe.replace(
+                struct_missing_label,
+                "",
+                inplace=True,
+            )
+
+        if missing_label is not None:
+            if complete_case is True:
+                dataframe.replace(
+                    missing_label,
+                    "missing",
+                    inplace=True,
+                )
+                dataframe.dropna(
+                    inplace=True,
+                )
+                dataframe.reset_index(drop=True, inplace=True)
+            else:
+                dataframe.replace(
+                    missing_label,
+                    "missing",
+                    inplace=True,
+                )
+
         # Paths sorted alphabetically in order of length
         self._sorted_paths = defaultdict(int)
 
         # pandas dataframe passed via parameters
-        if var_order is not None:
-            self.dataframe = dataframe[var_order]
-        else:
-            self.dataframe = dataframe
+        self.dataframe = (
+            dataframe[var_order].astype(str)
+            if var_order is not None
+            else dataframe.astype(str)
+        )
 
         self.__construct_event_tree()
         logger.info('Initialisation complete!')
@@ -115,9 +200,6 @@ class EventTree(nx.MultiDiGraph):
     def variables(self) -> list:
         """The column headers of the dataset"""
         vars = list(self._dataframe.columns)
-        if self.holding_time_columns is not None:
-            ht_columns_to_exclude = list(self.holding_time_columns.values())
-            vars = [var for var in vars if var not in ht_columns_to_exclude]
         logger.info('Variables extracted from dataframe were:')
         logger.info(vars)
         return vars
@@ -158,10 +240,34 @@ class EventTree(nx.MultiDiGraph):
             if sz_paths:
                 self._sampling_zero_paths = sz_paths
             else:
-                error_str = "Parameter 'sampling_zero_paths' not in expected format. \
-                             Should be a list of tuples like so:\n \
-                             [('edge_1',), ('edge_1', 'edge_2'), ...]"
-                raise ValueError(error_str)
+                raise ValueError(
+                    "Parameter 'sampling_zero_paths' not in expected format. "
+                    "Should be a list of tuples like so:\n"
+                    "[('edge_1',), ('edge_1', 'edge_2'), ...]"
+                )
+
+    @property
+    def stratified(self) -> bool:
+        """Auto-stratification has taken place."""
+        return self._stratified
+
+    @stratified.setter
+    def stratified(self, stratified: bool):
+        if stratified and not self.complete_case:
+            raise ValueError(
+                "Under the current implementation, it is not possible to "
+                "automatically stratify the tree when non-structural "
+                "missing values are not removed (complete_case = False).\n"
+                "Please manually stratify the dataset by passing in the "
+                "additional paths required to do so through the "
+                "'sampling_zero_paths' parameter."
+            )
+        self._stratified = stratified
+        if self.sampling_zeros is not None:
+            logger.warn(
+                "User provided sampling_zero_paths, but these are being "
+                "ignored due to 'stratified' being enabled."
+            )
 
     @property
     def holding_time_columns(self) -> Dict:
@@ -229,7 +335,7 @@ class EventTree(nx.MultiDiGraph):
         nans_filtered = False
 
         for var in self.variables:
-            categories = set(self._dataframe[var].unique().tolist())
+            categories = set(self.dataframe[var].unique().tolist())
             # remove nan with pandas
             pd_filtered_categories = {x for x in categories if pd.notna(x)}
             if pd_filtered_categories != categories:
@@ -361,9 +467,16 @@ class EventTree(nx.MultiDiGraph):
         assuming they are structural zeroes'''
         unsorted_paths = self.__create_unsorted_paths_dict()
 
-        if self.sampling_zeros is not None:
+        sampling_zeros = (
+            _paths_required_for_stratification(self.dataframe)
+            if self.stratified
+            else self.sampling_zeros
+        )
+
+        if sampling_zeros is not None:
             unsorted_paths = Util.create_sampling_zeros(
-                self.sampling_zeros, unsorted_paths)
+                sampling_zeros, unsorted_paths
+            )
 
         depth = len(max(list(unsorted_paths.keys()), key=len))
         keys_of_list = list(unsorted_paths.keys())
@@ -379,16 +492,18 @@ class EventTree(nx.MultiDiGraph):
         node_list = self.__create_node_list_from_paths(self._sorted_paths)
         self.add_nodes_from(node_list)
 
-    def __check_sampling_zero_paths_param(self, sampling_zero_paths) -> list:
+    def __check_sampling_zero_paths_param(self, sampling_zero_paths) -> List:
         """Check param 'sampling_zero_paths' is in the correct format"""
+        coerced_sampling_zero_paths = []
         for tup in sampling_zero_paths:
             if not isinstance(tup, tuple):
                 return None
             else:
-                if not Util.check_tuple_contains_strings(tup):
-                    return None
+                coerced_sampling_zero_paths.append(
+                    tuple([str(elem) for elem in tup])
+                )
 
-        return sampling_zero_paths
+        return coerced_sampling_zero_paths
 
     def __create_node_list_from_paths(self, paths) -> list:
         """Creates list of all nodes: includes root, situations, leaves"""
@@ -431,31 +546,32 @@ class EventTree(nx.MultiDiGraph):
                 )
 
 
-def check_holding_time_mapping(
-    dataframe: DataFrame,
-    mapping_dict: Dict
-) -> None:
-    """ Checking dataframe that all variables mapped to holding time,
-        have values for the variable and corresponding holding time
-        OR both are missing."""
-    for variable, holding_time in mapping_dict.items():
-        variable_col: DataFrame = dataframe[variable]
-        variable_null_indexes = variable_col[
-            variable_col.isnull()
-        ].index.tolist()
+def _paths_required_for_stratification(dataframe: pd.DataFrame) -> List[Tuple]:
+    """produces additional paths required to make the tree stratified."""
+    # TAKE CARE to ensure that missing values and empty cells
+    # are not considered as values of a variable.
+    unique_variable_values = [
+        dataframe[col].unique()
+        for col in dataframe.columns
+    ]
+    all_possible_paths = list(itertools.product(*unique_variable_values))
+    existing_paths = [
+        tuple(path)
+        for path in dataframe.drop_duplicates().values.tolist()
+    ]
+    max_path_length = len(all_possible_paths[0])
+    missing_paths = []
 
-        holding_time_col: DataFrame = dataframe[holding_time]
-        holding_time_indexes = holding_time_col[
-            holding_time_col.isnull()
-        ].index.tolist()
+    for col in range(max_path_length, 0, -1):
+        temp_paths = [path[:col] for path in existing_paths]
+        new_missing_paths = [
+            path[:col]
+            for path in all_possible_paths
+            if path[:col] not in temp_paths
+        ]
+        if new_missing_paths:
+            missing_paths = [*new_missing_paths, *missing_paths]
+        else:
+            break
 
-        if holding_time_col.dtypes != np.float64:
-            raise TypeError(
-                f"Holding times should all be floats."
-                f"Column: {holding_time} contains values that are not floats."
-            )
-
-        if variable_null_indexes != holding_time_indexes:
-            raise ValueError(
-                f"Inconsitencies found: values for {variable} and "
-                f"{holding_time} are not perfectly mapped.")
+    return missing_paths
