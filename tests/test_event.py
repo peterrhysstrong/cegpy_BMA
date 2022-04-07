@@ -10,8 +10,8 @@ from src.cegpy.trees.event import _paths_required_for_stratification
 from pydotplus.graphviz import InvocationException
 
 
-class TestEventTreeAPI():
-    def setup(self):
+class TestEventTreeAPI(unittest.TestCase):
+    def setUp(self):
         df_path = Path(__file__).resolve(
             ).parent.parent.joinpath(
             'data/medical_dm_modified.xlsx')
@@ -33,8 +33,8 @@ class TestEventTreeAPI():
             sampling_zero_paths=szp)
 
 
-class TestEventTree():
-    def setup(self):
+class TestEventTree(unittest.TestCase):
+    def setUp(self) -> None:
         df_path = Path(__file__).resolve(
             ).parent.parent.joinpath(
             'data/medical_dm_modified.xlsx')
@@ -220,8 +220,8 @@ class TestUsecase():
         assert expected_fall_cats_per_var == actual_fall_cats_per_var
 
 
-class TestChangingDataFrame():
-    def setup(self):
+class TestChangingDataFrame(unittest.TestCase):
+    def setUp(self):
         # stratified dataset
         med_df_path = Path(__file__).resolve(
             ).parent.parent.joinpath(

@@ -96,7 +96,6 @@ class EventTree(nx.MultiDiGraph):
     _stratified: bool
     _sampling_zero_paths: Optional[List[Tuple]] = None
     # Paths sorted alphabetically in order of length
-    _sorted_paths: Mapping[Tuple[Str], int] = defaultdict(int)
 
     def __init__(
         self,
@@ -110,6 +109,9 @@ class EventTree(nx.MultiDiGraph):
         stratified=False,
         **attr
     ) -> None:
+        # Initialise Networkx DiGraph class
+        super().__init__(incoming_graph_data, **attr)
+
         # Checking argument inputs are sensible
         if not isinstance(dataframe, pd.DataFrame):
             raise ValueError(
@@ -136,25 +138,11 @@ class EventTree(nx.MultiDiGraph):
             raise ValueError(
                 "complete_case should be a boolean"
             )
-        self.complete_case = complete_case
-
-        self.sampling_zeros = sampling_zero_paths
 
         if not isinstance(stratified, bool):
             raise ValueError(
                 "stratified should be a boolean"
             )
-        self.stratified = stratified
-
-        # Initialise Networkx DiGraph class
-        super().__init__(incoming_graph_data, **attr)
-
-        # pandas dataframe passed via parameters
-        self.dataframe = (
-            dataframe[var_order].astype(str)
-            if var_order is not None
-            else dataframe.astype(str)
-        )
 
         # Dealing with structural and non-structural...
         # ... missing value labels
@@ -182,6 +170,18 @@ class EventTree(nx.MultiDiGraph):
                     "missing",
                     inplace=True,
                 )
+
+        self._sorted_paths = defaultdict(int)
+        # pandas dataframe passed via parameters
+        self.dataframe = (
+            dataframe[var_order].astype(str)
+            if var_order is not None
+            else dataframe.astype(str)
+        )
+
+        self.complete_case = complete_case
+        self.sampling_zeros = sampling_zero_paths
+        self.stratified = stratified
 
         self.__construct_event_tree()
         logger.info('Initialisation complete!')
