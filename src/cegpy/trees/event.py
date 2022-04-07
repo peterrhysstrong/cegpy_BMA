@@ -233,23 +233,40 @@ class EventTree(nx.MultiDiGraph):
 
     @stratified.setter
     def stratified(self, stratified: bool):
-        if stratified and not self.complete_case:
-            raise ValueError(
-                "If all through the provided dataset are complete, "
-                "set 'complete_case = True'. Otherwise, "
-                "under the current implementation, it is not possible to "
-                "automatically stratify the tree when non-structural "
-                "missing values are not removed (complete_case = False).\n"
-                "Please manually stratify the dataset by passing in the "
-                "additional paths required to do so through the "
-                "'sampling_zero_paths' parameter."
+        if stratified:
+            if not self.complete_case:
+                raise ValueError(
+                    "If all through the provided dataset are complete, "
+                    "set 'complete_case = True'. Otherwise, "
+                    "under the current implementation, it is not possible to "
+                    "automatically stratify the tree when non-structural "
+                    "missing values are not removed (complete_case = False).\n"
+                    "Please manually stratify the dataset by passing in the "
+                    "additional paths required to do so through the "
+                    "'sampling_zero_paths' parameter."
+                )
+
+            structural_zeros_exist = np.any(
+                self.dataframe.applymap(lambda x: x == "")
             )
-        self._stratified = stratified
+
+            if structural_zeros_exist:
+                raise ValueError(
+                    "Your dataset has missing values. If you believe these are"
+                    " non-structural missing values, then you can remove them "
+                    "by replacing them with a consistent string, and use the "
+                    "'missing_label' functionality to remove them "
+                    "automatically.\n"
+                    "You would then be able to use the stratified flag."
+                )
+
         if self.sampling_zeros is not None:
             logger.warn(
                 "User provided sampling_zero_paths, but these are being "
                 "ignored due to 'stratified' being enabled."
             )
+
+        self._stratified = stratified
 
     @property
     def situations(self) -> list:
