@@ -1,15 +1,33 @@
-from typing import List
-import pydotplus as pdp
-import networkx as nx
+"""Chain Event Graph"""
+
+from collections import defaultdict
 from copy import deepcopy
 import itertools as it
-
-from ..utilities.util import Util
+import logging
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
+import pydotplus as pdp
+import networkx as nx
 from IPython.display import Image
 from IPython import get_ipython
-import logging
+
+from ..utilities.util import Util
+from ..trees.staged import StagedTree
 
 logger = logging.getLogger('cegpy.chain_event_graph')
+
+
+class CegAlreadyGenerated(Exception):
+    """Raised when a CEG is generated twice."""
 
 
 class ChainEventGraph(nx.MultiDiGraph):
@@ -19,246 +37,182 @@ class ChainEventGraph(nx.MultiDiGraph):
     Input: Staged tree object (StagedTree)
     Output: Chain event graphs
     """
-    def __init__(self, staged_tree=None, **attr):
+    _edge_attributes: List = [
+        'count',
+        'prior',
+        'posterior',
+        'probability'
+        ]
+
+    sink_suffix: str = "&infin;"
+    node_prefix: str
+    generated: bool = False
+
+    def __init__(
+        self,
+        staged_tree: Optional[StagedTree] = None,
+        node_prefix: str = "w",
+        generate: bool = True,
+        **attr
+    ):
+        self.ahc_output = deepcopy(getattr(staged_tree, "ahc_output", {}))
         super().__init__(staged_tree, **attr)
-        self.sink_suffix = '&infin;'
-        self.node_prefix = 'w'
+        self.node_prefix = node_prefix
+        self._stages = {}
+        self.staged_root = staged_tree.root if staged_tree is not None else None
 
-        if staged_tree is not None:
-            try:
-                self.ahc_output = deepcopy(staged_tree.ahc_output)
-            except AttributeError:
-                self.ahc_output = {}
-        else:
-            logger.info("Class called with no incoming graph.")
+        if generate and staged_tree is not None:
+            self.generate()
 
     @property
-    def node_prefix(self):
-        return self._node_prefix
-
-    @node_prefix.setter
-    def node_prefix(self, value):
-        self._node_prefix = str(value)
+    def sink(self) -> str:
+        """Sink node name as a string."""
+        return f"{self.node_prefix}_infinity"
 
     @property
-    def sink_suffix(self):
-        return self._sink_suffix
-
-    @sink_suffix.setter
-    def sink_suffix(self, value):
-        self._sink_suffix = str(value)
+    def root(self) -> str:
+        """Root node name as a string."""
+        return f"{self.node_prefix}0"
 
     @property
-    def sink_node(self):
-        return "%s%s" % (self.node_prefix, self.sink_suffix)
-
-    @property
-    def root_node(self):
-        return ("%s0" % self.node_prefix)
-
-    @property
-    def path_list(self):
-        return self._path_list
-
-    @property
-    def stages(self):
-        self.__stages = {}
+    def stages(self) -> Mapping[str, Set[str]]:
+        """Mapping of stages to constituent nodes."""
         node_stages = dict(self.nodes(data='stage', default=None))
-        for k, v in node_stages.items():
-            try:
-                self.__stages[v].append(k)
-            except KeyError:
-                self.__stages[v] = [k]
+        stages = defaultdict(set)
+        for node, stage in node_stages.items():
+            stages[stage].add(node)
 
-        return self.__stages
+        return stages
+
+    @property
+    def path_list(self) -> List[Tuple[str]]:
+        """All the paths through the CEG, as a list of edge tuples."""
+        path_list: List[Tuple[str]] = [
+            path
+            for path in nx.all_simple_edge_paths(self, self.root, self.sink)
+        ]
+        return path_list
 
     def generate(self):
-        '''
-        This function takes the output of the AHC algorithm and identifies
+        """
+        Given the output of the AHC algorithm, this function identifies
         the positions i.e. the vertices of the CEG and the edges of the CEG
         along with their edge labels and edge counts. Here we use the
         algorithm in our paper with the optimal stopping time.
-        '''
-        def check_vertices_can_be_merged(v1, v2) -> bool:
-            has_same_successor_nodes = \
-                set(self.adj[v1].keys()) == set(self.adj[v2].keys())
+        """
+        if self.generated:
+            raise CegAlreadyGenerated("CEG has already been generated.")
 
-            if has_same_successor_nodes:
-                has_same_outgoing_edges = True
-                v1_adj = self.succ[v1]
-                for succ_node in list(v1_adj.keys()):
-                    v1_edges = self.succ[v1][succ_node]
-                    v2_edges = self.succ[v2][succ_node]
+        if self.ahc_output is None or self.ahc_output == {}:
+            raise ValueError(
+                "There is no AHC output in your StagedTree. "
+                "Run StagedTree.calculate_AHC_transitions() first."
+            )
 
-                    if v1_edges is None or v2_edges is None:
-                        has_same_outgoing_edges &= False
-                        break
-
-                    v2_edge_labels = \
-                        [label for label in v2_edges.keys()]
-
-                    for label in v1_edges.keys():
-                        if label not in v2_edge_labels:
-                            has_same_outgoing_edges &= False
-                            break
-                        else:
-                            has_same_outgoing_edges &= True
-            else:
-                has_same_outgoing_edges = False
-
-            try:
-                in_same_stage = \
-                    self.nodes[v1]['stage'] == self.nodes[v2]['stage']
-            except KeyError:
-                in_same_stage = False
-
-            return in_same_stage and \
-                has_same_successor_nodes and has_same_outgoing_edges
-
-        def merge_nodes(nodes_to_merge):
-            """nodes to merge should be a set of 2 element tuples"""
-            temp_1 = 'temp_1'
-            temp_2 = 'temp_2'
-            while nodes_to_merge != set():
-                nodes = nodes_to_merge.pop()
-                new_node = nodes[0]
-                # Copy nodes to temp nodes
-                node_map = {
-                    nodes[0]: temp_1,
-                    nodes[1]: temp_2
-                }
-                nx.relabel_nodes(self, node_map, copy=False)
-                ebunch_to_remove = []  # List of edges to remove
-                self.add_node(new_node)
-                for succ, t1_edge_dict in self.succ[temp_1].items():
-                    edge_labels = list(t1_edge_dict.keys())
-                    while edge_labels != []:
-                        new_edge_data = {}
-                        label = edge_labels.pop(0)
-                        t1_edge = t1_edge_dict[label]
-                        t2_edge = self.succ[temp_2][succ][label]
-                        new_edge_data['count'] = \
-                            t1_edge['count'] + t2_edge['count']
-                        new_edge_data['prior'] = \
-                            t1_edge['prior'] + t2_edge['prior']
-                        new_edge_data['posterior'] = \
-                            t1_edge['posterior'] + t2_edge['posterior']
-                        try:
-
-                            new_edge_data['probability'] = \
-                                t1_edge['probability']
-                            self.add_edge(
-                                u_for_edge=new_node,
-                                v_for_edge=succ,
-                                key=label,
-                                count=new_edge_data['count'],
-                                prior=new_edge_data['prior'],
-                                posterior=new_edge_data['posterior'],
-                                probability=new_edge_data['probability']
-                            )
-                        except KeyError:
-                            self.add_edge(
-                                u_for_edge=new_node,
-                                v_for_edge=succ,
-                                key=label,
-                                count=new_edge_data['count'],
-                                prior=new_edge_data['prior'],
-                                posterior=new_edge_data['posterior']
-                            )
-                        ebunch_to_remove.append((temp_1, succ, label))
-                        ebunch_to_remove.append((temp_2, succ, label))
-
-                self.remove_edges_from(ebunch_to_remove)
-                nx.relabel_nodes(
-                    G=self,
-                    mapping={temp_1: new_node, temp_2: new_node},
-                    copy=False
-                )
-
-                # Some nodes have been removed, we need to update the
-                # mergeable list to point to new nodes if required
-                temp_list = list(nodes_to_merge)
-                for pair in temp_list:
-                    if nodes[1] in pair:
-                        new_pair = (
-                            # the other node of the pair
-                            pair[pair.index(nodes[1]) - 1],
-                            # the new node it will be merged to
-                            new_node
-                        )
-                        nodes_to_merge.remove(pair)
-                        if new_pair[0] != new_pair[1]:
-                            nodes_to_merge.add(new_pair)
-                pass
-
-        def relabel_nodes(base_nodes, renamed_nodes=[]):
-            next_level = []
-            # first, relabel the successors of this node
-            for node in base_nodes:
-                node_mapping = {}
-                for succ in self.succ[node].keys():
-                    if succ != self.sink_node and succ not in renamed_nodes:
-                        node_mapping[succ] = self._get_next_node_name()
-                        next_level.append(node_mapping[succ])
-                        renamed_nodes.append(node_mapping[succ])
-
-                if node_mapping != {}:
-                    nx.relabel_nodes(
-                        self,
-                        node_mapping,
-                        copy=False
-                    )
-            if next_level != []:
-                relabel_nodes(next_level, renamed_nodes)
-
-        if self.ahc_output == {}:
-            raise ValueError("Run staged tree AHC transitions first.")
         # rename root node:
-        nx.relabel_nodes(self, {'s0': self.root_node}, copy=False)
-        self._update_probabilities()
+        nx.relabel_nodes(self, {self.staged_root: self.root}, copy=False)
         self._trim_leaves_from_graph()
-        self._update_distances_of_nodes_to_sink_node()
-        src_node_gen = self._gen_nodes_with_increasing_distance(
-            start=1
+        self._update_distances_to_sink()
+        self._backwards_construction(
+            self._gen_nodes_with_increasing_distance(start=1)
         )
-        next_set_of_nodes = next(src_node_gen)
+        self._relabel_nodes()
+        self.generated = True
 
-        while next_set_of_nodes != [self.root_node]:
+    def _backwards_construction(self, node_generator: Iterable[str]) -> None:
+        """Working backwards from the sink, the algorithm constructs the CEG."""
+        next_set_of_nodes: List = next(node_generator)
+
+        while next_set_of_nodes != [self.root]:
             nodes_to_merge = set()
             while len(next_set_of_nodes) > 1:
                 node_1 = next_set_of_nodes.pop(0)
                 for node_2 in next_set_of_nodes:
-                    mergeable = check_vertices_can_be_merged(node_1, node_2)
+                    mergeable = self._check_nodes_can_be_merged(node_1, node_2)
                     if mergeable:
                         nodes_to_merge.add((node_1, node_2))
 
-            merge_nodes(nodes_to_merge)
+            if nodes_to_merge:
+                self._merge_nodes(nodes_to_merge)
 
             try:
-                next_set_of_nodes = next(src_node_gen)
+                next_set_of_nodes: List = next(node_generator)
             except StopIteration:
-                next_set_of_nodes = []
+                break
 
-        relabel_nodes([self.root_node])
-        self._update_path_list()
+    def _merge_nodes(self, nodes_to_merge: Set):
+        """nodes to merge should be a set of 2 element tuples"""
+        temp_1 = 'temp_1'
+        temp_2 = 'temp_2'
+        while nodes_to_merge:
+            nodes = nodes_to_merge.pop()
+            new_node = nodes[0]
+            # Copy nodes to temp nodes
+            node_map = {
+                nodes[0]: temp_1,
+                nodes[1]: temp_2
+            }
+            nx.relabel_nodes(self, node_map, copy=False)
+            self.add_node(new_node)
 
-    @property
-    def dot_graph(self):
-        return self._generate_dot_graph()
+            edges_to_remove = self._merge_and_add_edges(
+                new_node,
+                temp_1,
+                temp_2,
+            )
+            self.remove_edges_from(edges_to_remove)
+            nx.relabel_nodes(
+                G=self,
+                mapping={temp_1: new_node, temp_2: new_node},
+                copy=False
+            )
 
-    def _generate_dot_graph(self):
+            # Some nodes have been removed, we need to update the
+            # mergeable list to point to new nodes if required
+            temp_list = list(nodes_to_merge)
+            for pair in temp_list:
+                if nodes[1] in pair:
+                    new_pair = (
+                        # the other node of the pair
+                        pair[pair.index(nodes[1]) - 1],
+                        # the new node it will be merged to
+                        new_node
+                    )
+                    nodes_to_merge.remove(pair)
+                    if new_pair[0] != new_pair[1]:
+                        nodes_to_merge.add(new_pair)
+
+    def dot_graph(self, edge_info: str ="probability") -> pdp.Dot:
+        """Dot representation of the CEG."""
+        return self._generate_dot_graph(edge_info=edge_info)
+
+    def _generate_dot_graph(self, edge_info="probability"):
         graph = pdp.Dot(graph_type='digraph', rankdir='LR')
-        edge_probabilities = list(
-            self.edges(data='probability', default=1, keys=True)
-        )
+        if edge_info in self._edge_attributes:
+            edge_info_dict = nx.get_edge_attributes(self, edge_info)
+        else:
+            logger.warning(
+                f"edge_info '{edge_info}' does not exist for the "
+                f"{self.__class__.__name__} class. Using the default of 'probability' values "
+                "on edges instead. For more information, see the "
+                "documentation."
+            )
+            edge_info_dict = nx.get_edge_attributes(self, 'probability')
 
-        for (u, v, k, p) in edge_probabilities:
-            full_label = "{}\n{:.2f}".format(k, p)
+        for (src, dst, label), attribute in edge_info_dict.items():
+            if edge_info == "count":
+                edge_details = str(label) + '\n' + str(attribute)
+            else:
+                edge_details = f"{label}\n{float(attribute):.2f}"
+
+            if dst[1:] == "_infinity":
+                dst = f"{self.node_prefix}&infin;"
+
             graph.add_edge(
                 pdp.Edge(
-                    src=u,
-                    dst=v,
-                    label=full_label,
+                    src,
+                    dst,
+                    label=edge_details,
                     labelfontcolor='#009933',
                     fontsize='10.0',
                     color='black'
@@ -270,6 +224,8 @@ class ChainEventGraph(nx.MultiDiGraph):
                 fill_colour = self.nodes[node]['colour']
             except KeyError:
                 fill_colour = 'white'
+            if node[1:] == "_infinity":
+                node = f"{self.node_prefix}&infin;"
             label = "<" + node[0] + "<SUB>" + node[1:] + "</SUB>" + ">"
             graph.add_node(
                 pdp.Node(
@@ -281,88 +237,58 @@ class ChainEventGraph(nx.MultiDiGraph):
             )
         return graph
 
-    def create_figure(self, filename):
+    def create_figure(
+        self,
+        filename=None,
+        edge_info: str = "probability",
+    ) -> Union[Image, None]:
         """
         Draws the chain event graph representation of the stage tree,
         and saves it to "<filename>.filetype". Supports any filetype that
         graphviz supports. e.g: "event_tree.png" or "event_tree.svg" etc.
         """
-        filename, filetype = Util.generate_filename_and_mkdir(filename)
-        graph = self.dot_graph
-        graph.write(str(filename), format=filetype)
-
-        if get_ipython() is None:
-            return None
+        graph = self.dot_graph(edge_info=edge_info)
+        if filename is None:
+            logger.warning("No filename. Figure not saved.")
         else:
-            return Image(graph.create_png())
+            filename, filetype = Util.generate_filename_and_mkdir(filename)
+            logger.info("--- generating graph ---")
+            logger.info("--- writing " + filetype + " file ---")
+            graph.write(str(filename), format=filetype)
 
-    def _update_probabilities(self):
-        count_total_lbl = 'count_total'
-        edge_counts = list(self.edges(data='count', keys=True, default=0))
+        if get_ipython() is not None:
+            logger.info("--- Exporting graph to notebook ---")
+            graph_image = Image(graph.create_png())
+        else:
+            graph_image = None
 
-        for stage, stage_nodes in self.stages.items():
-            count_total = 0
-            stage_edges = {}
-            if stage is not None:
+        return graph_image
 
-                for (u, _, k, c) in edge_counts:
-                    if u in stage_nodes:
-                        count_total += c
-                        try:
-                            stage_edges[k] += c
-                        except KeyError:
-                            stage_edges[k] = c
+    def _trim_leaves_from_graph(self):
+        """Trims all the leaves from the graph, and points each incoming
+        edge to the sink node."""
+        # Create new CEG sink node
+        self.add_node(self.sink, colour='lightgrey')
+        outgoing_edges = deepcopy(self.succ).items()
+        # Check to see if any nodes have no outgoing edges.
+        mapping = {}
+        for node, out_edges in outgoing_edges:
+            if not out_edges and node != self.sink:
+                mapping[node] = self.sink
 
-                for node in stage_nodes:
-                    self.nodes[node][count_total_lbl] = count_total
+        nx.relabel_nodes(self, mapping, copy=False)
 
-                for (u, v, k, _) in edge_counts:
-                    if u in stage_nodes:
-                        self.edges[u, v, k]['probability'] =\
-                            stage_edges[k] / count_total
-            else:
-                for node in stage_nodes:
-                    count_total = 0
-                    stage_edges = {}
-                    for (u, _, k, c) in edge_counts:
-                        if u == node:
-                            count_total += c
-                            try:
-                                stage_edges[k] += c
-                            except KeyError:
-                                stage_edges[k] = c
-
-                    self.nodes[node][count_total_lbl] = count_total
-                    for (u, v, k, _) in edge_counts:
-                        if u == node:
-                            self.edges[u, v, k]['probability'] =\
-                                stage_edges[k] / count_total
-
-    def _update_path_list(self) -> None:
-        path_generator = nx.all_simple_edge_paths(
-            self,
-            self.root_node,
-            self.sink_node
-        )
-        path_list = []
-        while True:
-            try:
-                path_list.append(next(path_generator))
-            except StopIteration:
-                self._path_list = path_list
-                break
-
-    def _update_distances_of_nodes_to_sink_node(self) -> None:
+    def _update_distances_to_sink(self) -> None:
         """
         Iterates through the graph until it finds the root node.
         For each node, it determines the maximum number of edges
         from that node to the sink node.
         """
-        max_dist = 'max_dist_to_sink'
-        self.nodes[self.sink_node][max_dist] = 0
-        node_queue = [self.sink_node]
+        max_dist = "max_dist_to_sink"
+        self.nodes[self.sink][max_dist] = 0
+        node_queue = [self.sink]
 
-        while node_queue != [self.root_node]:
+        while node_queue != [self.root]:
             node = node_queue.pop(0)
             for pred in self.predecessors(node):
                 max_dist_to_sink = set()
@@ -378,50 +304,119 @@ class ChainEventGraph(nx.MultiDiGraph):
                 if pred not in node_queue:
                     node_queue.append(pred)
 
-    def _gen_nodes_with_increasing_distance(self, start=0) -> List:
+    def _gen_nodes_with_increasing_distance(self, start=0) -> list:
+        """Generates nodes that are either the same or further
+        from the sink node than the last node generated."""
         max_dists = nx.get_node_attributes(self, 'max_dist_to_sink')
-        distance_dict = {}
-        for key, value in max_dists.items():
-            distance_dict.setdefault(value, []).append(key)
+        distance_dict: Mapping[int, Iterable[str]] = {}
+        for node, distance in max_dists.items():
+            dist_list: List = distance_dict.setdefault(distance, [])
+            dist_list.append(node)
 
-        for dist in range(len(distance_dict)):
-            if dist >= start:
-                yield distance_dict[dist]
+        for dist in range(0, max(distance_dict) + 1):
+            nodes = distance_dict.get(dist)
+            if dist >= start and nodes is not None:
+                yield nodes
 
-    def _get_next_node_name(self):
+    def _relabel_nodes(self):
+        """Relabels nodes whilst maintaining ordering."""
+        num_iterator = it.count(1, 1)
+        nodes_to_rename = list(self.succ[self.root].keys())
+        # first, relabel the successors of this node
+        node_mapping = {}
+        while nodes_to_rename:
+            for node in nodes_to_rename.copy():
+                node_mapping[node] = f"{self.node_prefix}{next(num_iterator)}"
+                for succ in self.succ[node].keys():
+                    if (succ != self.sink and succ not in nodes_to_rename):
+                        nodes_to_rename.append(succ)
+                nodes_to_rename.remove(node)
+
+        nx.relabel_nodes(
+            self,
+            node_mapping,
+            copy=False
+        )
+
+    def _merge_and_add_edges(
+        self,
+        new_node: str,
+        node_1: str,
+        node_2: str,
+    ) -> List[Tuple]:
+        """Merges outgoing edges of two nodes so that the two nodes can be
+        merged."""
+        old_edges_to_remove = []
+        for succ, t1_edge_dict in self.succ[node_1].items():
+            edge_labels = list(t1_edge_dict.keys())
+            while edge_labels:
+                label = edge_labels.pop(0)
+                n1_edge_data = t1_edge_dict[label]
+                n2_edge_data = self.succ[node_2][succ][label]
+
+                new_edge_data = _merge_edge_data(
+                    edge_1=n1_edge_data,
+                    edge_2=n2_edge_data,
+                )
+                self.add_edge(
+                    u_for_edge=new_node,
+                    v_for_edge=succ,
+                    key=label,
+                    **new_edge_data,
+                )
+                old_edges_to_remove.extend(
+                    [(node_1, succ, label), (node_2, succ, label)]
+                )
+
+        return old_edges_to_remove
+
+    def _check_nodes_can_be_merged(self, node_1, node_2) -> bool:
+        """Determine if the two nodes are able to be merged."""
+        have_same_successor_nodes = (
+            set(self.adj[node_1].keys()) == set(self.adj[node_2].keys())
+        )
+
+        if have_same_successor_nodes:
+            have_same_outgoing_edges = True
+            n1_adj = self.succ[node_1]
+            for succ_node in list(n1_adj.keys()):
+                n1_edges = self.succ[node_1][succ_node]
+                n2_edges = self.succ[node_2][succ_node]
+
+                n2_edge_labels = list(n2_edges.keys())
+
+                for label in n1_edges.keys():
+                    if label not in n2_edge_labels:
+                        have_same_outgoing_edges &= False
+                        break
+                    have_same_outgoing_edges &= True
+        else:
+            have_same_outgoing_edges = False
+
         try:
-            num = str(next(self._num_iter))
-        except AttributeError:
-            self._num_iter = it.count(1, 1)
-            num = str(next(self._num_iter))
+            in_same_stage = (
+                self.nodes[node_1]['stage'] == self.nodes[node_2]['stage']
+            )
+        except KeyError:
+            in_same_stage = False
 
-        return str(self.node_prefix) + num
+        return in_same_stage and (
+            have_same_successor_nodes and have_same_outgoing_edges
+        )
 
-    def _trim_leaves_from_graph(self):
-        # Create new CEG sink node
-        self.add_node(self.sink_node, colour='lightgrey')
-        outgoing_edges = deepcopy(self.succ).items()
-        # Check to see if any nodes have no outgoing edges.
-        for node, outgoing_edges in outgoing_edges:
-            if outgoing_edges == {} and node != self.sink_node:
-                incoming_edges = deepcopy(self.pred[node]).items()
-                # When node is identified as a leaf check the
-                # predessesor nodes that have edges that enter this node.
-                for pred_node, edges in incoming_edges:
-                    for edge_label, edge in edges.items():
-                        # Create new edge that points to the sink node,
-                        # with all the same data as the edge we will delete.
-                        try:
-                            prob = edge['probability']
-                        except KeyError:
-                            prob = 1
-                        self.add_edge(
-                            pred_node,
-                            self.sink_node,
-                            key=edge_label,
-                            count=edge['count'],
-                            prior=edge['prior'],
-                            posterior=edge['posterior'],
-                            probability=prob
-                        )
-                self.remove_node(node)
+
+def _merge_edge_data(
+    edge_1: Dict[str, Any],
+    edge_2: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Merges the counts, priors, and posteriors of two edges."""
+    new_edge_data = {}
+    edge = edge_1 if len(edge_1) > len(edge_2) else edge_2
+    for key in edge:
+        if key == "probability":
+            new_edge_data[key] = edge_1.get(key, 1)
+        else:
+            new_edge_data[key] = (
+                edge_1.get(key, 0) + edge_2.get(key, 0)
+            )
+    return new_edge_data

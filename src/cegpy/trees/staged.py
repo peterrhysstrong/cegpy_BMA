@@ -2,9 +2,8 @@ from copy import deepcopy
 from fractions import Fraction
 from operator import add, sub, itemgetter
 from IPython.display import Image
-from IPython import get_ipython
 from itertools import combinations, chain
-from typing import List, Tuple
+from typing import List, Optional, Tuple, Union
 import networkx as nx
 import scipy.special
 import logging
@@ -15,20 +14,36 @@ logger = logging.getLogger('cegpy.staged_tree')
 
 
 class StagedTree(EventTree):
+
+    _edge_attributes: List = [
+        'count', 
+        'prior', 
+        'posterior',
+        'probability' 
+        ]
+
     def __init__(
             self,
             dataframe,
             sampling_zero_paths=None,
             incoming_graph_data=None,
             var_order=None,
+            struct_missing_label=None,
+            missing_label=None,
+            complete_case=False,
+            stratified=False,
             **attr) -> None:
 
         # Call event tree init to generate event tree
         super().__init__(
-            dataframe,
-            sampling_zero_paths,
-            incoming_graph_data,
-            var_order,
+            dataframe=dataframe,
+            sampling_zero_paths=sampling_zero_paths,
+            incoming_graph_data=incoming_graph_data,
+            var_order=var_order,
+            struct_missing_label=struct_missing_label,
+            missing_label=missing_label,
+            complete_case=complete_case,
+            stratified=stratified,
             **attr
         )
 
@@ -240,7 +255,7 @@ class StagedTree(EventTree):
         elif isinstance(alpha, int) or isinstance(alpha, str):
             alpha = Fraction.from_float(float(alpha))
         else:
-            logger.warning("Prior generator param alpha is in a strange format.\
+            raise TypeError("Prior generator param alpha is in a strange format.\
                             ..")
 
         sample_size_at_node[self.root] = alpha
@@ -347,11 +362,6 @@ class StagedTree(EventTree):
         sum_pri_contribution = sum(pri_contribution)
         sum_post_contribution = sum(post_contribution)
         return (sum_pri_contribution + sum_post_contribution)
-
-    def _check_issubset(self, item, hyperstage) -> bool:
-        '''function to check if two situations belong to the same set in the
-        hyperstage'''
-        return any(set(item).issubset(element) for element in hyperstage)
 
     def _calculate_bayes_factor(self, prior1, posterior1,
                                 prior2, posterior2) -> float:
@@ -535,13 +545,18 @@ class StagedTree(EventTree):
                 break
 
         merged_situation_list = self._sort_list(merged_situation_list)
-        mean_posterior_probs = (
-            self._calculate_mean_posterior_probs(
-                merged_situation_list,
-                posteriors
-            )
+        for sit in self.situations:
+            if sit not in list(chain(*merged_situation_list)):
+                merged_situation_list.append((sit,))
+
+        self._apply_mean_posterior_probs(
+            merged_situations=merged_situation_list,
+            mean_posterior_probs=_calculate_mean_posterior_probs(
+                self.situations, merged_situation_list, posteriors
+            ),
         )
-        return mean_posterior_probs, loglikelihood, merged_situation_list
+
+        return loglikelihood, merged_situation_list
 
     def _mark_nodes_with_stage_number(self, merged_situations):
         """AHC algorithm creates a list of indexes to the situations list.
@@ -565,7 +580,8 @@ class StagedTree(EventTree):
             if len(colour_list) < num_colours:
                 raise IndexError(
                     f"The number of colours provided ({len(colour_list)}) is "
-                    f"less than the number of distinct colours required ({num_colours})."
+                    "less than the number of distinct colours required "
+                    f"({num_colours})."
                 )
         self._stage_colours = stage_colours
         for node in self.nodes:
@@ -589,7 +605,7 @@ class StagedTree(EventTree):
 
         self._store_params(prior, alpha, hyperstage)
 
-        mean_posterior_probs, loglikelihood, merged_situations = (
+        loglikelihood, merged_situations = (
             self._execute_AHC())
 
         self._mark_nodes_with_stage_number(merged_situations)
@@ -599,33 +615,72 @@ class StagedTree(EventTree):
         self.ahc_output = {
             "Merged Situations": merged_situations,
             "Loglikelihood": loglikelihood,
-            "Mean Posterior Probabilities": mean_posterior_probs
         }
         return self.ahc_output
 
-    def create_figure(self, filename):
+    def dot_staged_graph(self, edge_info: str ="count"):
+        return self._generate_dot_graph(edge_info=edge_info)
+
+    def create_figure(
+        self,
+        filename: Optional[str] = None,
+        staged: bool = True,
+        edge_info: str ="count"
+    ) -> Union[Image, None]:
         """Draws the coloured staged tree for the process described by
         the dataset, and saves it to "<filename>.filetype". Supports
         any filetype that graphviz supports. e.g: "event_tree.png" or
         "event_tree.svg" etc.
         """
-        try:
-            self.ahc_output
-            filename, filetype = Util.generate_filename_and_mkdir(filename)
-            logger.info("--- generating graph ---")
-            graph = self.dot_graph
-            logger.info("--- writing " + filetype + " file ---")
-            graph.write(str(filename), format=filetype)
+        if staged:
+            try:
+                _ = self._ahc_output
+                graph = self.dot_staged_graph(edge_info)
+                graph_image = super()._create_figure(graph, filename)
 
-            if get_ipython() is None:
-                return None
-            else:
-                logger.info("--- Exporting graph to notebook ---")
-                return Image(graph.create_png())
+            except AttributeError:
+                logger.error(
+                    "----- PLEASE RUN AHC ALGORITHM before trying to" +
+                    " export a staged tree graph -----"
+                )
+                graph_image = None
+        else:
+            graph_image = super().create_figure(filename)
+        return graph_image
 
-        except AttributeError:
-            logger.error(
-                "----- PLEASE RUN AHC ALGORITHM before trying to" +
-                " export graph -----"
-            )
-            return None
+    def _apply_mean_posterior_probs(
+        self, merged_situations: List, mean_posterior_probs: List
+    ) -> None:
+        """Apply the mean posterior probabilities to each edge."""
+        for stage_idx, stage in enumerate(merged_situations):
+            for sit in stage:
+                dst_nodes = list(chain(self.succ[sit]))
+                edge_labels = list(chain(*self.succ[sit].values()))
+                for edge_idx, label in enumerate(edge_labels):
+                    self.edges[
+                        (sit, dst_nodes[edge_idx], label)
+                    ]["probability"] = mean_posterior_probs[stage_idx][edge_idx]
+
+
+def _calculate_mean_posterior_probs(
+    all_situations: List, merged_situations: List, posteriors: List
+) -> List:
+    """Given a staged tree, calculate the mean posterior probs."""
+    # Add all situations that are not in a stage.
+    mean_posterior_probs = []
+    for stage in merged_situations:
+        for sit in stage:
+            sit_idx = all_situations.index(sit)
+            if all(posteriors[sit_idx]) != 0:
+                stage_posteriors = posteriors[sit_idx]
+                break
+
+        total = sum(stage_posteriors)
+        mean_posterior_probs.append(
+            [
+                round(posterior/total, 3)
+                for posterior in stage_posteriors
+            ]
+        )
+
+    return mean_posterior_probs

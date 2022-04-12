@@ -1,6 +1,4 @@
-from ast import Str
 from collections import defaultdict
-import itertools
 from typing import List, Mapping, Optional, Tuple
 import numpy as np
 import pydotplus as pdp
@@ -96,6 +94,8 @@ class EventTree(nx.MultiDiGraph):
     _stratified: bool
     _sampling_zero_paths: Optional[List[Tuple]] = None
     # Paths sorted alphabetically in order of length
+    _sorted_paths: Mapping[Tuple[str], int]
+    _edge_attributes: List = ['count']
 
     def __init__(
         self,
@@ -117,6 +117,8 @@ class EventTree(nx.MultiDiGraph):
             raise ValueError(
                 "The dataframe parameter must be a pandas.DataFrame"
             )
+        # Initialise Networkx DiGraph class
+        super().__init__(incoming_graph_data, **attr)
 
         if (
             struct_missing_label is not None
@@ -157,10 +159,15 @@ class EventTree(nx.MultiDiGraph):
             if complete_case is True:
                 dataframe.replace(
                     missing_label,
-                    np.NaN,
+                    "missing",
                     inplace=True,
                 )
-                dataframe.dropna(
+                rows_to_delete = np.where(
+                    dataframe == "missing"
+                )[0].tolist()
+                dataframe.drop(
+                    rows_to_delete,
+                    axis = 0,
                     inplace=True,
                 )
                 dataframe.reset_index(drop=True, inplace=True)
@@ -317,8 +324,6 @@ class EventTree(nx.MultiDiGraph):
             categories = set(self.dataframe[var].unique().tolist())
             # remove nan with pandas
             pd_filtered_categories = {x for x in categories if pd.notna(x)}
-            if pd_filtered_categories != categories:
-                nans_filtered = True
 
             # remove any string nans that might have made it in.
             filtered_cats = pd_filtered_categories - categories_to_ignore
@@ -332,15 +337,31 @@ class EventTree(nx.MultiDiGraph):
 
         return self._catagories_per_variable
 
-    @property
-    def dot_graph(self):
-        return self._generate_dot_graph()
+    def dot_event_graph(self, edge_info: str = "count"):
+        return self._generate_dot_graph(
+            fill_colour='lightgrey',
+            edge_info=edge_info
+        )
 
-    def _generate_dot_graph(self):
+    def _generate_dot_graph(self, fill_colour=None, edge_info="count"):
         node_list = list(self)
         graph = pdp.Dot(graph_type='digraph', rankdir='LR')
-        for edge, count in self.edge_counts.items():
-            edge_details = str(edge[2]) + '\n' + str(count)
+        if edge_info in self._edge_attributes:
+            edge_info_dict = nx.get_edge_attributes(self, edge_info)
+        else:
+            logger.warning(
+                f"edge_info '{edge_info}' does not exist for the "
+                f"{self.__class__.__name__} class. Using the default of 'count' values "
+                "on edges instead. For more information, see the "
+                "documentation."
+            )
+            edge_info_dict = nx.get_edge_attributes(self, 'count')
+
+        for edge, attribute in edge_info_dict.items():
+            if edge_info == "count":
+                edge_details = str(edge[2]) + '\n' + str(attribute)
+            else:
+                edge_details = f"{edge[2]}\n{float(attribute):.2f}"
 
             graph.add_edge(
                 pdp.Edge(
@@ -352,37 +373,54 @@ class EventTree(nx.MultiDiGraph):
                     color="black"
                 )
             )
-
         for node in node_list:
-            try:
-                fill_colour = self.nodes[node]['colour']
-            except KeyError:
-                fill_colour = 'lightgrey'
+            if fill_colour is None:
+                try:
+                    fill_node_colour = self.nodes[node]['colour']
+                except KeyError:
+                    fill_node_colour = 'lightgrey'
+            else:
+                fill_node_colour = fill_colour
             label = "<" + node[0] + "<SUB>" + node[1:] + "</SUB>" + ">"
             graph.add_node(
                 pdp.Node(
                     name=node,
                     label=label,
                     style="filled",
-                    fillcolor=fill_colour))
+                    fillcolor=fill_node_colour))
         return graph
 
-    def create_figure(self, filename):
+    def _create_figure(
+        self,
+        graph: pdp.Dot,
+        filename: str
+    ):
         """Draws the event tree for the process described by the dataset,
         and saves it to "<filename>.filetype". Supports any filetype that
         graphviz supports. e.g: "event_tree.png" or "event_tree.svg" etc.
         """
-        filename, filetype = Util.generate_filename_and_mkdir(filename)
-        logger.info("--- generating graph ---")
-        graph = self.dot_graph
-        logger.info("--- writing " + filetype + " file ---")
-        graph.write(str(filename), format=filetype)
-
-        if get_ipython() is None:
-            return None
+        if filename is None:
+            logger.warning("No filename. Figure not saved.")
         else:
+            filename, filetype = Util.generate_filename_and_mkdir(filename)
+            logger.info("--- generating graph ---")
+            logger.info("--- writing " + filetype + " file ---")
+            graph.write(str(filename), format=filetype)
+            graph_image = None
+
+        if get_ipython() is not None:
             logger.info("--- Exporting graph to notebook ---")
-            return Image(graph.create_png())
+            graph_image = Image(graph.create_png())
+        else:
+            graph_image = None
+
+        return graph_image
+
+    def create_figure(self, filename=None, edge_info: str = "count"):
+        return self._create_figure(
+            self.dot_event_graph(edge_info=edge_info),
+            filename
+        )
 
     def __create_unsorted_paths_dict(self) -> defaultdict:
         """Creates and populates a dictionary of all paths provided in the dataframe,
@@ -422,16 +460,9 @@ class EventTree(nx.MultiDiGraph):
         assuming they are structural zeroes'''
         unsorted_paths = self.__create_unsorted_paths_dict()
 
-        sampling_zeros = (
-            _paths_required_for_stratification(self.dataframe)
-            if self.stratified
-            else self.sampling_zeros
-        )
-
-        if sampling_zeros is not None:
+        if self.sampling_zeros is not None:
             unsorted_paths = Util.create_sampling_zeros(
-                sampling_zeros, unsorted_paths
-            )
+                self.sampling_zeros, unsorted_paths)
 
         depth = len(max(list(unsorted_paths.keys()), key=len))
         keys_of_list = list(unsorted_paths.keys())
@@ -499,34 +530,3 @@ class EventTree(nx.MultiDiGraph):
                     key=path[-1],
                     count=count
                 )
-
-
-def _paths_required_for_stratification(dataframe: pd.DataFrame) -> List[Tuple]:
-    """produces additional paths required to make the tree stratified."""
-    # TAKE CARE to ensure that missing values and empty cells
-    # are not considered as values of a variable.
-    unique_variable_values = [
-        dataframe[col].unique()
-        for col in dataframe.columns
-    ]
-    all_possible_paths = list(itertools.product(*unique_variable_values))
-    existing_paths = [
-        tuple(path)
-        for path in dataframe.drop_duplicates().values.tolist()
-    ]
-    max_path_length = len(all_possible_paths[0])
-    missing_paths = []
-
-    for col in range(max_path_length, 0, -1):
-        temp_paths = [path[:col] for path in existing_paths]
-        new_missing_paths = [
-            path[:col]
-            for path in all_possible_paths
-            if path[:col] not in temp_paths
-        ]
-        if new_missing_paths:
-            missing_paths = [*new_missing_paths, *missing_paths]
-        else:
-            break
-
-    return missing_paths
