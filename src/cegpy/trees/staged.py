@@ -11,6 +11,7 @@ from ..utilities.util import Util
 from ..trees.event import EventTree
 import random
 import numpy as np
+import random 
 
 logger = logging.getLogger('cegpy.staged_tree')
 
@@ -369,23 +370,25 @@ class StagedTree(EventTree):
                                 prior2, posterior2) -> float:
         '''calculates the bayes factor comparing two models which differ in
         only one stage'''
-        new_prior = list(map(add, prior1, prior2))
-        new_posterior = list(map(add, posterior1, posterior2))
-        return (
-            self._calculate_lg_of_sum(new_prior)
-            - self._calculate_lg_of_sum(prior1)
-            - self._calculate_lg_of_sum(prior2)
-            - self._calculate_lg_of_sum(new_posterior)
-            + self._calculate_lg_of_sum(posterior1)
-            + self._calculate_lg_of_sum(posterior2)
-            + self._calculate_sum_of_lg(new_posterior)
-            - self._calculate_sum_of_lg(posterior1)
-            - self._calculate_sum_of_lg(posterior2)
-            - self._calculate_sum_of_lg(new_prior)
-            + self._calculate_sum_of_lg(prior1)
-            + self._calculate_sum_of_lg(prior2)
-        )
-
+        if all(prior1) == 0 or all(prior2) == 0:
+            return -np.inf
+        else:
+            new_prior = list(map(add, prior1, prior2))
+            new_posterior = list(map(add, posterior1, posterior2))
+            return (
+                self._calculate_lg_of_sum(new_prior)
+                - self._calculate_lg_of_sum(prior1)
+                - self._calculate_lg_of_sum(prior2)
+                - self._calculate_lg_of_sum(new_posterior)
+                + self._calculate_lg_of_sum(posterior1)
+                + self._calculate_lg_of_sum(posterior2)
+                + self._calculate_sum_of_lg(new_posterior)
+                - self._calculate_sum_of_lg(posterior1)
+                - self._calculate_sum_of_lg(posterior2)
+                - self._calculate_sum_of_lg(new_prior)
+                + self._calculate_sum_of_lg(prior1)
+                + self._calculate_sum_of_lg(prior2)
+            )
     def _sort_list(self, list_of_tuples) -> list:
         '''function to sort a list of lists to remove repetitions'''
 
@@ -503,7 +506,112 @@ class StagedTree(EventTree):
             item for sub_hyper in hyperstage
             for item in combinations(sub_hyper, 2)
         ]
+        while True:
+            newscores_list = [self._calculate_bayes_factor(
+                priors[self.situations.index(sub_hyper[0])],
+                posteriors[self.situations.index(sub_hyper[0])],
+                priors[self.situations.index(sub_hyper[1])],
+                posteriors[self.situations.index(sub_hyper[1])],
+            ) for sub_hyper in hyperstage_combinations]
+            #get hyperstage_combinations that have a score > 0
+            comb = [hyperstage_combinations[i] for i in range(len(hyperstage_combinations)) if newscores_list[i] > 0]
+            print(comb)
+            # print(newscores_list)
+            local_score = max(newscores_list)
 
+            if local_score > 0:
+                local_merged = hyperstage_combinations[
+                    newscores_list.index(local_score)
+                ]
+                merge_situ_1, merge_situ_2 = local_merged
+                merge_situ_1_idx = self.situations.index(merge_situ_1)
+                merge_situ_2_idx = self.situations.index(merge_situ_2)
+                merged_situation_list.append(local_merged)
+
+                priors[merge_situ_1_idx] = list(
+                    map(
+                        add,
+                        priors[merge_situ_1_idx],
+                        priors[merge_situ_2_idx]
+                    )
+                )
+                posteriors[merge_situ_1_idx] = list(
+                    map(
+                        add,
+                        posteriors[merge_situ_1_idx],
+                        posteriors[merge_situ_2_idx]
+                    )
+                )
+                priors[merge_situ_2_idx] = (
+                    [0] * len(priors[merge_situ_1_idx]))
+                posteriors[merge_situ_2_idx] = (
+                    [0] * len(posteriors[merge_situ_1_idx]))
+
+                loglikelihood += local_score
+            else:
+                break
+
+        merged_situation_list = self._sort_list(merged_situation_list)
+        for sit in self.situations:
+            if sit not in list(chain(*merged_situation_list)):
+                merged_situation_list.append((sit,))
+
+        self._apply_mean_posterior_probs(
+            merged_situations=merged_situation_list,
+            mean_posterior_probs=_calculate_mean_posterior_probs(
+                self.situations, merged_situation_list, posteriors
+            ),
+        )
+
+        return loglikelihood, merged_situation_list
+
+    def _execute_aMPC(self, hyperstage=None) -> Tuple[List, float, List]:
+        """finds all subsets and scores them"""
+        if hyperstage is None:
+            hyperstage = deepcopy(self.hyperstage)
+
+        priors = deepcopy(self.prior_list)
+        posteriors = deepcopy(self.posterior_list)
+
+        loglikelihood = self._calculate_initial_loglikelihood(
+            priors, posteriors
+        )
+
+        merged_situation_list = []
+
+        # Which list in hyperstage have only 1 edge coming out of them
+        # For that list, add the list to the merged situation list, and
+        # add together their priors/posteriors, and remove it from the
+        # hyperstage
+        for sub_hyper in deepcopy(hyperstage):
+            if self.out_degree[sub_hyper[0]] == 1:
+                merged_situation_list.append(tuple(sub_hyper))
+                indexes = [self.situations.index(situ) for situ in sub_hyper]
+                if len(indexes) == 1:
+                    sub_hyper_priors = itemgetter(*indexes)(priors)
+                    sub_hyper_posteriors = itemgetter(*indexes)(posteriors)
+                else:
+                    sub_hyper_priors = list(chain(
+                        *itemgetter(*indexes)(priors)
+                    ))
+                    sub_hyper_posteriors = list(chain(
+                        *itemgetter(*indexes)(posteriors)
+                    ))
+                for loop_idx, p_index in enumerate(indexes):
+                    if loop_idx == 0:
+                        priors[p_index] = [sum(sub_hyper_priors)]
+                        posteriors[p_index] = [sum(sub_hyper_posteriors)]
+                    else:
+                        priors[p_index] = [0]
+                        posteriors[p_index] = [0]
+
+                hyperstage.remove(sub_hyper)
+
+        hyperstage_combinations = [
+            item for sub_hyper in hyperstage
+            for item in combinations(sub_hyper, 2)
+        ]
+        #instead of calulating scores choose distance and then calulate for that distance
         while True:
             newscores_list = [self._calculate_bayes_factor(
                 priors[self.situations.index(sub_hyper[0])],
@@ -541,6 +649,110 @@ class StagedTree(EventTree):
                     [0] * len(priors[merge_situ_1_idx]))
                 posteriors[merge_situ_2_idx] = (
                     [0] * len(posteriors[merge_situ_1_idx]))
+
+                loglikelihood += local_score
+            else:
+                break
+
+        merged_situation_list = self._sort_list(merged_situation_list)
+        for sit in self.situations:
+            if sit not in list(chain(*merged_situation_list)):
+                merged_situation_list.append((sit,))
+
+        self._apply_mean_posterior_probs(
+            merged_situations=merged_situation_list,
+            mean_posterior_probs=_calculate_mean_posterior_probs(
+                self.situations, merged_situation_list, posteriors
+            ),
+        )
+
+        return loglikelihood, merged_situation_list
+
+    def _execute_MPC(self, hyperstage=None) -> Tuple[List, float, List]:
+        """finds all subsets and scores them"""
+        if hyperstage is None:
+            hyperstage = deepcopy(self.hyperstage)
+
+    
+        priors = deepcopy(self.prior_list)
+        posteriors = deepcopy(self.posterior_list)
+
+        loglikelihood = self._calculate_initial_loglikelihood(
+            priors, posteriors
+        )
+        merged_situation_list = []
+        G = nx.Graph()
+
+
+        # # Which list in hyperstage have only 1 edge coming out of them
+        # # For that list, add the list to the merged situation list, and
+        # # add together their priors/posteriors, and remove it from the
+        # # hyperstage
+        for sub_hyper in deepcopy(hyperstage):
+            if self.out_degree[sub_hyper[0]] == 1:
+                merged_situation_list.append(tuple(sub_hyper))
+                indexes = [self.situations.index(situ) for situ in sub_hyper]
+                if len(indexes) == 1:
+                    sub_hyper_priors = itemgetter(*indexes)(priors)
+                    sub_hyper_posteriors = itemgetter(*indexes)(posteriors)
+                else:
+                    sub_hyper_priors = list(chain(
+                        *itemgetter(*indexes)(priors)
+                    ))
+                    sub_hyper_posteriors = list(chain(
+                        *itemgetter(*indexes)(posteriors)
+                    ))
+                for loop_idx, p_index in enumerate(indexes):
+                    if loop_idx == 0:
+                        priors[p_index] = [sum(sub_hyper_priors)]
+                        posteriors[p_index] = [sum(sub_hyper_posteriors)]
+                    else:
+                        priors[p_index] = [0]
+                        posteriors[p_index] = [0]
+
+                hyperstage.remove(sub_hyper)
+
+        hyperstage_combinations = [
+            item for sub_hyper in hyperstage
+            for item in combinations(sub_hyper, 2)
+        ]
+        while True:
+            newscores_list = [self._calculate_bayes_factor(
+                priors[self.situations.index(sub_hyper[0])],
+                posteriors[self.situations.index(sub_hyper[0])],
+                priors[self.situations.index(sub_hyper[1])],
+                posteriors[self.situations.index(sub_hyper[1])],
+             ) if sub_hyper not in merged_situation_list else -np.inf for sub_hyper in hyperstage_combinations ]
+            local_score = max(newscores_list)
+            if local_score > 0:
+                local_merged = hyperstage_combinations[
+                    newscores_list.index(local_score)
+                ]
+                merge_situ_1, merge_situ_2 = local_merged
+                merge_situ_1_idx = self.situations.index(merge_situ_1)
+                merge_situ_2_idx = self.situations.index(merge_situ_2)
+                merged_situation_list.append(local_merged)
+                G.add_edge(*local_merged)
+                priors[merge_situ_1_idx] = list(
+                    map(
+                        add,
+                        priors[merge_situ_1_idx],
+                        priors[merge_situ_2_idx]
+                    )
+                )
+                posteriors[merge_situ_1_idx] = list(
+                    map(
+                        add,
+                        posteriors[merge_situ_1_idx],
+                        posteriors[merge_situ_2_idx]
+                    )
+                )
+
+                joined= list(nx.node_connected_component(G, merge_situ_1))
+                for situ in joined:
+                    merge_situ_all_idx = self.situations.index(situ)
+                    priors[merge_situ_all_idx] = priors[merge_situ_1_idx]
+                    posteriors[merge_situ_all_idx] = posteriors[merge_situ_1_idx]
 
                 loglikelihood += local_score
             else:
@@ -618,16 +830,23 @@ class StagedTree(EventTree):
                 break
             if np.isnan(newscores_list).all():
                 break
-            max_local_score = max(newscores_list)
-            if max_local_score > 0:
-                exp_newscores = [np.exp(x) for x in newscores_list]
-                exp_newscores = [0 if x != x else x for x in exp_newscores]
+            exp_newscores = [np.exp(x) for x in newscores_list]
+            #break if all values are zero
+            if exp_newscores == [0] * len(exp_newscores):
+                break
+            max_local_score = max(exp_newscores)
+            if (max_local_score > 1 or random.random() < 0.05):# and max_local_score != -np.inf:
+                # exp_newscores = [np.exp(x) for x in newscores_list]
+                # exp_newscores = [0 if x != x else x for x in exp_newscores]
                 local_score = random.choices(
                     population=newscores_list,
                     weights=exp_newscores,
                     k=1)
+                if local_score == [-1.0]:
+                    print(exp_newscores)
+                # else:
                 local_merged = hyperstage_combinations[
-                    newscores_list.index(local_score)
+                    newscores_list.index(*local_score)
                 ]
                 merge_situ_1, merge_situ_2 = local_merged
                 merge_situ_1_idx = self.situations.index(merge_situ_1)
@@ -724,19 +943,22 @@ class StagedTree(EventTree):
                 posteriors[self.situations.index(sub_hyper[0])],
                 priors[self.situations.index(sub_hyper[1])],
                 posteriors[self.situations.index(sub_hyper[1])],
-            ) for sub_hyper in hyperstage_combinations]
-            if newscores_list == []:
-                break
-            if np.isnan(newscores_list).all():
-                break
-            max_local_score = max(newscores_list)
-            # if max_local_score > 0:
-            exp_newscores = [np.exp(x) for x in newscores_list]
-            exp_newscores = [0 if x != x else x for x in exp_newscores]
-            local_score = random.choices(
-                population=newscores_list,
-                weights=exp_newscores,
-                k=1)
+            ) if sub_hyper not in merged_situation_list
+            else -np.inf
+            for sub_hyper in hyperstage_combinations ]
+            local_score = max(newscores_list)
+            if local_score == -np.inf:
+                 break
+            # if np.isnan(newscores_list).all():
+            #     break
+            # max_local_score = max(newscores_list)
+            # # if max_local_score > 0:
+            # exp_newscores = [np.exp(x) for x in newscores_list]
+            # exp_newscores = [0 if x != x else x for x in exp_newscores]
+            # local_score = random.choices(
+            #     population=newscores_list,
+            #     weights=exp_newscores,
+            #     k=1)
             local_merged = hyperstage_combinations[
                 newscores_list.index(local_score)
             ]
@@ -759,6 +981,9 @@ class StagedTree(EventTree):
                     posteriors[merge_situ_2_idx]
                 )
             )
+
+            # priors[merge_situ_2_idx] = priors[merge_situ_1_idx]
+            # posteriors[merge_situ_2_idx] = posteriors[merge_situ_1_idx]
             priors[merge_situ_2_idx] = (
                 [0] * len(priors[merge_situ_1_idx]))
             posteriors[merge_situ_2_idx] = (
@@ -858,6 +1083,59 @@ class StagedTree(EventTree):
 
         loglikelihood, merged_situations = (
             self._execute_wHAC())
+
+        self._mark_nodes_with_stage_number(merged_situations)
+
+        self._generate_colours_for_situations(merged_situations, colour_list)
+
+        self.ahc_output = {
+            "Merged Situations": merged_situations,
+            "Loglikelihood": loglikelihood,
+        }
+        return self.ahc_output
+    def calculate_aMPC_transitions(self, prior=None,
+                                  alpha=None, hyperstage=None,
+                                  colour_list=None):
+        '''Bayesian Agglommerative Hierarchical Clustering algorithm
+        implementation. It returns a list of lists of the situations which
+        have been merged together, the likelihood of the final model and
+        the mean posterior conditional probabilities of the stages.
+
+        User can specify a list of colours to be used for stages. Otherwise,
+        colours evenly spaced around the colour spectrum are used.'''
+        logger.info("\n\n --- Starting AHC Algorithm ---")
+
+        self._store_params(prior, alpha, hyperstage)
+
+        loglikelihood, merged_situations = (
+            self._execute_aMPC())
+
+        self._mark_nodes_with_stage_number(merged_situations)
+
+        self._generate_colours_for_situations(merged_situations, colour_list)
+
+        self.ahc_output = {
+            "Merged Situations": merged_situations,
+            "Loglikelihood": loglikelihood,
+        }
+        return self.ahc_output
+
+    def calculate_MPC_transitions(self, prior=None,
+                                  alpha=None, hyperstage=None,
+                                  colour_list=None):
+        '''Bayesian Agglommerative Hierarchical Clustering algorithm
+        implementation. It returns a list of lists of the situations which
+        have been merged together, the likelihood of the final model and
+        the mean posterior conditional probabilities of the stages.
+
+        User can specify a list of colours to be used for stages. Otherwise,
+        colours evenly spaced around the colour spectrum are used.'''
+        logger.info("\n\n --- Starting AHC Algorithm ---")
+
+        self._store_params(prior, alpha, hyperstage)
+
+        loglikelihood, merged_situations = (
+            self._execute_MPC())
 
         self._mark_nodes_with_stage_number(merged_situations)
 
